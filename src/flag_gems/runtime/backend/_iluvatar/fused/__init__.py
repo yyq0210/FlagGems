@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from .matmul_bias_activation import matmul_bias_activation
+from .rotary_embedding import apply_rotary_pos_emb
 from .sparse_attention import sparse_attn_triton
 from .top_k_per_row_prefill import top_k_per_row_prefill
 
 __all__ = [
+    "apply_rotary_pos_emb",
     "matmul_bias_activation",
     "sparse_attn_triton",
     "top_k_per_row_prefill",
