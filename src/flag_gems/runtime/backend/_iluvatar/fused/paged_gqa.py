@@ -73,8 +73,10 @@ def _attention(
     acc = tl.zeros((BM, 128), tl.float32)
     for base in range(lo, hi, TILE):
         tokens = base + t
+        # A shared or interleaved cache can exceed 2^31 elements even when
+        # each page stride fits int32. Widen before multiplying by strides.
         blocks = tl.load(BT + seq * BTS + tokens // PAGE,
-                         tokens < length, 0)
+                         tokens < length, 0).to(tl.int64)
         k = tl.load(K + blocks[None, :] * K0 + (tokens % PAGE)[None, :] * K1
                     + group * K2 + d[:, None], tokens[None, :] < length, 0)
         v = tl.load(V + blocks[:, None] * V0 + (tokens % PAGE)[:, None] * V1
