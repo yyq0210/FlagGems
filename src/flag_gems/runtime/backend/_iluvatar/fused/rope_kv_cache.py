@@ -59,8 +59,17 @@ def _rope_kv(
         tl.store(vb + hi[None, :], vb_value, cache_mask)
 
 
+def select_rope_kv_config(num_tokens):
+    """Static BI-V150 choice confirmed with reordered CUDA-graph trials."""
+    if num_tokens <= 32:
+        return 4, 1
+    if num_tokens <= 128:
+        return 16, 1
+    return 4, 4
+
+
 def rope_kv_cache(q, k, v, cos, sin, positions, k_cache, v_cache, slots,
-                  *, interleaved=False, head_tile=8, token_tile=1,
+                  *, interleaved=False, head_tile=None, token_tile=None,
                   num_warps=4):
     """Caller validates Q16/KV2/D128, unquantized cache and unique valid slots.
 
@@ -68,6 +77,11 @@ def rope_kv_cache(q, k, v, cos, sin, positions, k_cache, v_cache, slots,
     padding beyond the slot tensor never write the cache. Cache strides are
     explicit; page addresses are widened before multiplication.
     """
+    if head_tile is None and token_tile is None:
+        head_tile, token_tile = select_rope_kv_config(q.shape[0])
+    else:
+        head_tile = 8 if head_tile is None else head_tile
+        token_tile = 1 if token_tile is None else token_tile
     oq = torch.empty(q.shape, device=q.device, dtype=q.dtype)
     ok = torch.empty(k.shape, device=k.device, dtype=k.dtype)
     if q.shape[0]:
