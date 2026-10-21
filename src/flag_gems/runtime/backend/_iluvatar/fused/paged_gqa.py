@@ -130,7 +130,8 @@ def _reduce(PO, PM, PL, O, CU, OS: tl.constexpr, OH: tl.constexpr,
 
 def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
               partial_out, partial_max, partial_sum, *, segments=16,
-              decode_tile=32, prefill_tile=32, prefill_rows=64):
+              decode_tile=32, prefill_tile=32, prefill_rows=64,
+              decode_warps=4, decode_stages=2):
     """Write exact causal attention (up to floating-point roundoff) to out.
 
     Q/O: [tokens,16,128]; K/V: [pages,page_size,2,128].
@@ -155,7 +156,8 @@ def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
         _attention[(q.shape[0] // (prefill_rows // 8) + nseq, 2)](
             *args, prefill_tile, prefill_rows, False, num_warps=4, num_stages=2)
     _attention[(nseq, 2, segments)](
-        *args, decode_tile, 16, True, num_warps=4, num_stages=2)
+        *args, decode_tile, 16, True,
+        num_warps=decode_warps, num_stages=decode_stages)
     _reduce[(nseq, 16)](
         partial_out, partial_max, partial_sum, out, cu, out.stride(0), out.stride(1),
         capacity_segments, segments, triton.next_power_of_2(segments), num_warps=4)
