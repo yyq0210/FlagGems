@@ -21,6 +21,7 @@ def _attention(
     BTS: tl.constexpr, PAGE: tl.constexpr,
     CAP_SEG: tl.constexpr, SEGMENTS: tl.constexpr,
     TILE: tl.constexpr, BM: tl.constexpr, DECODE: tl.constexpr,
+    DECODE_LAYOUT: tl.constexpr,
 ):
     group = tl.program_id(1)
     if DECODE:
@@ -75,10 +76,25 @@ def _attention(
         tokens = base + t
         # A shared or interleaved cache can exceed 2^31 elements even when
         # each page stride fits int32. Widen before multiplying by strides.
-        blocks = tl.load(BT + seq * BTS + tokens // PAGE,
-                         tokens < length, 0).to(tl.int64)
-        k = tl.load(K + blocks[None, :] * K0 + (tokens % PAGE)[None, :] * K1
-                    + group * K2 + d[:, None], tokens[None, :] < length, 0)
+        if (DECODE and (DECODE_LAYOUT == 1 or DECODE_LAYOUT == 3)
+                and PAGE <= TILE and TILE % PAGE == 0):
+            # base is TILE-aligned. Load one physical page id per logical page,
+            # then expand to token lanes, preserving int64 address arithmetic.
+            page_ids = base // PAGE + tl.arange(0, TILE // PAGE)
+            page_blocks = tl.load(BT + seq * BTS + page_ids,
+                                  page_ids * PAGE < length, 0).to(tl.int64)
+            blocks = tl.reshape(tl.broadcast_to(page_blocks[:, None],
+                                                (TILE // PAGE, PAGE)), (TILE,))
+        else:
+            blocks = tl.load(BT + seq * BTS + tokens // PAGE,
+                             tokens < length, 0).to(tl.int64)
+        if DECODE and (DECODE_LAYOUT == 2 or DECODE_LAYOUT == 3):
+            kt = tl.load(K + blocks[:, None] * K0 + (tokens % PAGE)[:, None] * K1
+                         + group * K2 + d[None, :], tokens[:, None] < length, 0)
+            k = tl.trans(kt)
+        else:
+            k = tl.load(K + blocks[None, :] * K0 + (tokens % PAGE)[None, :] * K1
+                        + group * K2 + d[:, None], tokens[None, :] < length, 0)
         v = tl.load(V + blocks[:, None] * V0 + (tokens % PAGE)[:, None] * V1
                     + group * V2 + d[None, :], tokens[:, None] < length, 0)
         scores = tl.dot(q, k) * SCALE
@@ -131,7 +147,7 @@ def _reduce(PO, PM, PL, O, CU, OS: tl.constexpr, OH: tl.constexpr,
 def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
               partial_out, partial_max, partial_sum, *, segments=16,
               decode_tile=32, prefill_tile=32, prefill_rows=64,
-              decode_warps=4, decode_stages=2):
+              decode_warps=4, decode_stages=2, decode_layout=0, decode_rows=16):
     """Write exact causal attention (up to floating-point roundoff) to out.
 
     Q/O: [tokens,16,128]; K/V: [pages,page_size,2,128].
@@ -139,6 +155,7 @@ def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
     Scratch: contiguous FP32 [capacity,16,capacity_segments,128] / [...,segments].
     Python arguments describe shapes only, never GPU tensor contents.
     """
+    assert decode_layout in (0, 1, 2, 3) and decode_rows in (8, 16)
     nseq = lengths.numel()
     capacity_segments = partial_max.shape[-1]
     assert segments <= capacity_segments and partial_max.shape[0] >= nseq
@@ -154,9 +171,9 @@ def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
     # the register pressure of increasing the KV tile at the same time.
     if max_query_len > 1:
         _attention[(q.shape[0] // (prefill_rows // 8) + nseq, 2)](
-            *args, prefill_tile, prefill_rows, False, num_warps=4, num_stages=2)
+            *args, prefill_tile, prefill_rows, False, 0, num_warps=4, num_stages=2)
     _attention[(nseq, 2, segments)](
-        *args, decode_tile, 16, True,
+        *args, decode_tile, decode_rows, True, decode_layout,
         num_warps=decode_warps, num_stages=decode_stages)
     _reduce[(nseq, 16)](
         partial_out, partial_max, partial_sum, out, cu, out.stride(0), out.stride(1),
