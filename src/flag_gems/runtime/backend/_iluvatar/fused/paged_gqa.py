@@ -147,7 +147,8 @@ def _reduce(PO, PM, PL, O, CU, OS: tl.constexpr, OH: tl.constexpr,
 def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
               partial_out, partial_max, partial_sum, *, segments=16,
               decode_tile=32, prefill_tile=32, prefill_rows=64,
-              decode_warps=4, decode_stages=2, decode_layout=0, decode_rows=16):
+              decode_warps=4, decode_stages=2, decode_layout=0, decode_rows=16,
+              prefill_warps=4, prefill_stages=2):
     """Write exact causal attention (up to floating-point roundoff) to out.
 
     Q/O: [tokens,16,128]; K/V: [pages,page_size,2,128].
@@ -171,7 +172,8 @@ def paged_gqa(q, k, v, out, cu, lengths, block_table, scale, max_query_len,
     # the register pressure of increasing the KV tile at the same time.
     if max_query_len > 1:
         _attention[(q.shape[0] // (prefill_rows // 8) + nseq, 2)](
-            *args, prefill_tile, prefill_rows, False, 0, num_warps=4, num_stages=2)
+            *args, prefill_tile, prefill_rows, False, 0,
+            num_warps=prefill_warps, num_stages=prefill_stages)
     _attention[(nseq, 2, segments)](
         *args, decode_tile, decode_rows, True, decode_layout,
         num_warps=decode_warps, num_stages=decode_stages)
